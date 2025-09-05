@@ -65,7 +65,9 @@ public:
 private:
     const OnSetParametersCallbackHandle::SharedPtr cb_parameter;
 
-    apriltag_family_t* tf;
+    // Change from single family to vector of families
+    std::vector<apriltag_family_t*> tag_families;
+    std::vector<std::function<void(apriltag_family_t*)>> tf_destructors;
     apriltag_detector_t* const td;
 
     // parameter
@@ -76,13 +78,17 @@ private:
     std::unordered_map<int, std::string> tag_frames;
     std::unordered_map<int, double> tag_sizes;
 
-    std::function<void(apriltag_family_t*)> tf_destructor;
-
     const image_transport::CameraSubscriber sub_cam;
     const rclcpp::Publisher<apriltag_msgs::msg::AprilTagDetectionArray>::SharedPtr pub_detections;
     tf2_ros::TransformBroadcaster tf_broadcaster;
 
     pose_estimation_f estimate_pose = nullptr;
+
+    // Add platform pose estimation members
+    bool estimate_platform_pose;
+    std::string platform_frame_id;
+    std::unordered_map<int, cv::Point3f> platform_tag_positions;
+    std::vector<int64_t> platform_tag_ids;
 
     void onCamera(const sensor_msgs::msg::Image::ConstSharedPtr& msg_img, const sensor_msgs::msg::CameraInfo::ConstSharedPtr& msg_ci);
 
@@ -108,13 +114,18 @@ AprilTagNode::AprilTagNode(const rclcpp::NodeOptions& options)
     tf_broadcaster(this)
 {
     // read-only parameters
-    const std::string tag_family = declare_parameter("family", "36h11", descr("tag family", true));
     tag_edge_size = declare_parameter("size", 1.0, descr("default tag size", true));
 
-    // get tag names, IDs and sizes
+    // get tag names, IDs, families and sizes
     const auto ids = declare_parameter("tag.ids", std::vector<int64_t>{}, descr("tag ids", true));
+    const auto tag_families_list = declare_parameter("tag.families", std::vector<std::string>{}, descr("tag families per id", true));
     const auto frames = declare_parameter("tag.frames", std::vector<std::string>{}, descr("tag frame names per id", true));
     const auto sizes = declare_parameter("tag.sizes", std::vector<double>{}, descr("tag sizes per id", true));
+
+    // Validate that all vectors have the same size
+    if(!tag_families_list.empty() && ids.size() != tag_families_list.size()) {
+        throw std::runtime_error("Number of tag ids (" + std::to_string(ids.size()) + ") and families (" + std::to_string(tag_families_list.size()) + ") mismatch!");
+    }
 
     // get method for estimating tag pose
     const std::string& pose_estimation_method =
@@ -158,20 +169,62 @@ AprilTagNode::AprilTagNode(const rclcpp::NodeOptions& options)
         for(size_t i = 0; i < ids.size(); i++) { tag_sizes[ids[i]] = sizes[i]; }
     }
 
-    if(tag_fun.count(tag_family)) {
-        tf = tag_fun.at(tag_family).first();
-        tf_destructor = tag_fun.at(tag_family).second;
-        apriltag_detector_add_family(td, tf);
+    // Collect unique families from tag specifications
+    std::set<std::string> unique_families;
+    for(const std::string& family : tag_families_list) {
+        unique_families.insert(family);
     }
-    else {
-        throw std::runtime_error("Unsupported tag family: " + tag_family);
+
+    // If no tag-specific families are specified, use default
+    if(unique_families.empty()) {
+        unique_families.insert("36h11");  // default family
+    }
+
+    // Initialize families
+    for(const std::string& family_name : unique_families) {
+        if(tag_fun.count(family_name)) {
+            apriltag_family_t* tf = tag_fun.at(family_name).first();
+            tag_families.push_back(tf);
+            tf_destructors.push_back(tag_fun.at(family_name).second);
+            apriltag_detector_add_family(td, tf);
+            RCLCPP_INFO(get_logger(), "Added tag family: %s", family_name.c_str());
+        }
+        else {
+            RCLCPP_ERROR(get_logger(), "Unsupported tag family: %s", family_name.c_str());
+        }
+    }
+    
+    if(tag_families.empty()) {
+        throw std::runtime_error("No valid tag families specified!");
+    }
+
+    // Platform pose estimation parameters
+    estimate_platform_pose = declare_parameter("platform.enable", false, descr("estimate platform pose using multiple tags"));
+    platform_frame_id = declare_parameter("platform.frame_id", "platform", descr("platform frame id"));
+
+    // Platform tag configuration
+    platform_tag_ids = declare_parameter("platform.tag_ids", std::vector<int64_t>{}, descr("tag IDs on platform"));
+    const auto platform_x = declare_parameter("platform.tag_x", std::vector<double>{}, descr("tag X positions on platform"));
+    const auto platform_y = declare_parameter("platform.tag_y", std::vector<double>{}, descr("tag Y positions on platform"));
+    const auto platform_z = declare_parameter("platform.tag_z", std::vector<double>{}, descr("tag Z positions on platform"));
+    
+    // Build platform tag positions map
+    if(platform_tag_ids.size() == platform_x.size() && 
+       platform_tag_ids.size() == platform_y.size() && 
+       platform_tag_ids.size() == platform_z.size()) {
+        for(size_t i = 0; i < platform_tag_ids.size(); i++) {
+            platform_tag_positions[platform_tag_ids[i]] = cv::Point3f(platform_x[i], platform_y[i], platform_z[i]);
+        }
     }
 }
 
 AprilTagNode::~AprilTagNode()
 {
     apriltag_detector_destroy(td);
-    tf_destructor(tf);
+    // Destroy all families
+    for(size_t i = 0; i < tag_families.size(); i++) {
+        tf_destructors[i](tag_families[i]);
+    }
 }
 
 void AprilTagNode::onCamera(const sensor_msgs::msg::Image::ConstSharedPtr& msg_img,
@@ -200,6 +253,9 @@ void AprilTagNode::onCamera(const sensor_msgs::msg::Image::ConstSharedPtr& msg_i
 
     if(profile)
         timeprofile_display(td->tp);
+
+    // Add info message about total detections
+    RCLCPP_INFO(get_logger(), "Detected %d AprilTags in current frame", zarray_size(detections));
 
     apriltag_msgs::msg::AprilTagDetectionArray msg_detections;
     msg_detections.header = msg_img->header;
@@ -242,6 +298,41 @@ void AprilTagNode::onCamera(const sensor_msgs::msg::Image::ConstSharedPtr& msg_i
             const double size = tag_sizes.count(det->id) ? tag_sizes.at(det->id) : tag_edge_size;
             tf.transform = estimate_pose(det, intrinsics, size);
             tfs.push_back(tf);
+        }
+    }
+
+    // Platform pose estimation
+    std::vector<apriltag_detection_t*> platform_detections;
+    
+    for(int i = 0; i < zarray_size(detections); i++) {
+        apriltag_detection_t* det;
+        zarray_get(detections, i, &det);
+        
+        // Collect platform tags
+        if(estimate_platform_pose && platform_tag_positions.count(det->id)) {
+            platform_detections.push_back(det);
+        }
+    }
+    
+    // Estimate platform pose
+    if(estimate_platform_pose && platform_detections.size() >= 1 && calibrated) {
+        // Add info message about platform tags
+        RCLCPP_INFO(get_logger(), "Platform pose estimation: Using %zu/%d detected tags for platform estimation", 
+                   platform_detections.size(), zarray_size(detections));
+                   
+        geometry_msgs::msg::Transform platform_transform = platform_pnp(
+            platform_detections, 
+            intrinsics, 
+            platform_tag_positions,
+            tag_sizes,
+            tag_edge_size);
+        
+        if(platform_transform.translation.x != 0 || platform_transform.translation.y != 0 || platform_transform.translation.z != 0) {
+            geometry_msgs::msg::TransformStamped platform_tf;
+            platform_tf.header = msg_img->header;
+            platform_tf.child_frame_id = platform_frame_id;
+            platform_tf.transform = platform_transform;
+            tfs.push_back(platform_tf);
         }
     }
 
