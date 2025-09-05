@@ -1,3 +1,8 @@
+# Added features 
+- Multiple tag families simultaneously - Support for mixed tag families (36h11, Custom48h12, etc.) in a single detection pipeline
+- Multi-tag PnP estimation - Pose estimation using multiple AprilTags with known relative positions with respect to the body of interest
+- Enhanced configuration - YAML support for defining tag layouts and relative positioning within rigid bodies
+
 # AprilTag ROS 2 Node
 
 This ROS 2 node uses the AprilTag library to detect AprilTags in images and publish their pose, id and additional metadata.
