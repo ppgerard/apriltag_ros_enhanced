@@ -1,0 +1,8 @@
+# Bridge the t2_cruza_vtol camera_info topic from Gazebo to ROS 2 using ros_gz_bridge.
+# The camera image itself is bridged separately by ros_gz_image (see t2_vtol_gz_bridge.launch.py).
+
+- ros_topic_name: "/sensor/imager/camera_info"
+  gz_topic_name: "/world/apriltag/model/t2_cruza_vtol_0/link/camera_link/sensor/imager/camera_info"
+  ros_type_name: "sensor_msgs/msg/CameraInfo"
+  gz_type_name: "gz.msgs.CameraInfo"
+  direction: GZ_TO_ROS

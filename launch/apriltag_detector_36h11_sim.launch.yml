@@ -1,0 +1,17 @@
+launch:
+
+- node:
+    pkg: apriltag_ros
+    exec: apriltag_node
+    name: apriltag
+    namespace: apriltag
+
+    remap:
+    - from: image_rect
+      to: /sensor/imager/image
+
+    - from: camera_info
+      to: /sensor/imager/camera_info
+
+    param:
+    - from: $(find-pkg-share apriltag_ros)/cfg/tags_36h11.yaml

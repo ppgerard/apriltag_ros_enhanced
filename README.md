@@ -92,3 +92,19 @@ This `AprilTagNode` component can be loaded with other nodes into a "container n
 ```sh
 ros2 launch apriltag_ros camera_36h11.launch.yml
 ```
+
+## Gazebo simulation (x500 / T2 Cruza VTOL)
+
+For simulation, the camera image and `camera_info` are bridged from Gazebo into ROS 2 (topics are normalized to `/sensor/imager/image` and `/sensor/imager/camera_info`), then detected by the standalone `apriltag_node` using [tags_36h11.yaml](cfg/tags_36h11.yaml). Each drone has its own Gazebo bridge, since the bridged topic names depend on the spawned model name:
+
+- `x500_gz_bridge.launch.py` / `cfg/x500_gz_bridge.yaml` — bridges the `x500_mono_cam_0` model camera.
+- `t2_vtol_gz_bridge.launch.py` / `cfg/t2_vtol_gz_bridge.yaml` — bridges the `t2_cruza_vtol_0` model camera.
+
+Detection itself is drone-agnostic and shared by both: [apriltag_detector_36h11_sim.launch.yml](launch/apriltag_detector_36h11_sim.launch.yml).
+
+To launch the bridge and the detector together for a given drone, use its combined launch file:
+```sh
+ros2 launch apriltag_ros x500_apriltag_sim.launch.py
+# or
+ros2 launch apriltag_ros t2_vtol_apriltag_sim.launch.py
+```

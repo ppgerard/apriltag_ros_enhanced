@@ -255,7 +255,7 @@ void AprilTagNode::onCamera(const sensor_msgs::msg::Image::ConstSharedPtr& msg_i
         timeprofile_display(td->tp);
 
     // Add info message about total detections
-    RCLCPP_INFO(get_logger(), "Detected %d AprilTags in current frame", zarray_size(detections));
+    // RCLCPP_INFO(get_logger(), "Detected %d AprilTags in current frame", zarray_size(detections));
 
     apriltag_msgs::msg::AprilTagDetectionArray msg_detections;
     msg_detections.header = msg_img->header;
@@ -316,10 +316,6 @@ void AprilTagNode::onCamera(const sensor_msgs::msg::Image::ConstSharedPtr& msg_i
     
     // Estimate platform pose
     if(estimate_platform_pose && platform_detections.size() >= 1 && calibrated) {
-        // Add info message about platform tags
-        RCLCPP_INFO(get_logger(), "Platform pose estimation: Using %zu/%d detected tags for platform estimation", 
-                   platform_detections.size(), zarray_size(detections));
-                   
         geometry_msgs::msg::Transform platform_transform = platform_pnp(
             platform_detections, 
             intrinsics, 
